@@ -121,6 +121,7 @@
   .picker-item img{ width:48px; height:48px; border-radius:6px; object-fit:cover; }
   .picker-item span{ font-size:13px; }
   .picker-none{ font-family:'Space Mono', monospace; font-size:11px; letter-spacing:.05em; text-transform:uppercase; text-align:center; color:var(--muted); border:1px dashed var(--line); border-radius:8px; padding:12px; margin-top:8px; cursor:pointer; }
+  .picker-url-row{ margin-top:12px; padding-top:12px; border-top:1px solid var(--line); display:flex; flex-direction:column; gap:8px; }
 
   .save-row{ display:flex; gap:10px; margin-top:6px; }
   .save-btn{ flex:1; font-family:'Space Mono', monospace; font-size:12px; letter-spacing:.06em; text-transform:uppercase; padding:12px; border-radius:8px; cursor:pointer; border:1px solid var(--accent); background:var(--accent); color:#fff; }
@@ -200,6 +201,10 @@
     <div class="picker-status" id="pickerStatus"></div>
     <div class="picker-list" id="pickerList"></div>
     <div class="picker-none" id="pickerNone">Usar sin foto</div>
+    <div class="picker-url-row">
+      <input class="edit-input" id="pickerUrlInput" placeholder="O pegá el link de una foto de internet...">
+      <button class="find-photo-btn" id="pickerUrlBtn">Usar este link</button>
+    </div>
   </div>
 </div>
 
@@ -220,7 +225,21 @@ let activeView = 'routine';
 let progress = {};
 let calCursor = new Date();
 
-function todayKey(){ return new Date().toISOString().slice(0,10); }
+// Fecha local (no UTC): evita que de noche el "hoy" salte al día siguiente.
+function todayKey(){
+  const d = new Date();
+  const p = n => String(n).padStart(2,'0');
+  return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate());
+}
+// Lunes=Día 1 ... Viernes=Día 5. Sábado y domingo caen en el Día 1.
+function weekdayDayIndex(){
+  const dow = new Date().getDay();
+  return (dow >= 1 && dow <= 5) ? dow - 1 : 0;
+}
+// Guarda el día que estás mirando, para volver a él si la app se recarga.
+async function saveActiveDay(){
+  await storeSet('active_day', JSON.stringify({ date: todayKey(), day: activeDay }));
+}
 
 /* Storage layer: uses Claude's window.storage when available (inside Claude),
    falls back to the browser's own localStorage when this file is opened standalone
@@ -252,6 +271,16 @@ async function loadAll(){
   const p = await storeGet('progress');
   progress = p ? JSON.parse(p) : {};
 
+  // Si ya habías elegido un día hoy, se vuelve a ese; si no, va al día de la semana.
+  let startDay = weekdayDayIndex();
+  try{
+    const a = await storeGet('active_day');
+    if(a){
+      const s = JSON.parse(a);
+      if(s && s.date === todayKey() && Number.isInteger(s.day)) startDay = s.day;
+    }
+  }catch(e){}
+  activeDay = startDay;
   if(activeDay >= routine.length) activeDay = 0;
 }
 async function saveRoutine(){
@@ -295,7 +324,7 @@ function renderTabs(){
     const btn = document.createElement('button');
     btn.className = 'tab' + (i===activeDay?' active':'') + (allDone && i!==activeDay ? ' complete':'');
     btn.innerHTML = `<span class="tnum">D${i+1}</span>${day.label}`;
-    btn.onclick = ()=>{ activeDay=i; render(); };
+    btn.onclick = ()=>{ activeDay=i; saveActiveDay(); render(); };
     tabsEl.appendChild(btn);
   });
 }
@@ -619,6 +648,13 @@ document.getElementById('pickerNone').onclick = ()=>{
   if(pickerCurrentChoose) pickerCurrentChoose('');
   document.getElementById('pickerOverlay').classList.remove('open');
 };
+document.getElementById('pickerUrlBtn').onclick = ()=>{
+  const url = document.getElementById('pickerUrlInput').value.trim();
+  if(!url) return;
+  if(pickerCurrentChoose) pickerCurrentChoose(url);
+  document.getElementById('pickerUrlInput').value = '';
+  document.getElementById('pickerOverlay').classList.remove('open');
+};
 document.getElementById('pickerClose').onclick = ()=>{
   document.getElementById('pickerOverlay').classList.remove('open');
 };
@@ -677,6 +713,30 @@ document.getElementById('importFile').addEventListener('change', async (e)=>{
 
 // Registra el service worker para que la app funcione sin conexión
 // después de la primera vez que se abre con internet.
+// Versión de la app: cuando cambia, se auto-limpia el caché viejo y se recarga sola,
+// sin que el usuario tenga que borrar nada manualmente desde Ajustes.
+const APP_VERSION = 'v5';
+(async function autoUpdate(){
+  try{
+    const savedVersion = await storeGet('app_version');
+    if(savedVersion !== APP_VERSION){
+      if('serviceWorker' in navigator){
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for(const reg of regs){ await reg.unregister(); }
+      }
+      if('caches' in window){
+        const keys = await caches.keys();
+        for(const key of keys){ await caches.delete(key); }
+      }
+      await storeSet('app_version', APP_VERSION);
+      if(savedVersion !== null){
+        location.reload();
+        return;
+      }
+    }
+  }catch(e){ console.error(e); }
+})();
+
 if('serviceWorker' in navigator){
   window.addEventListener('load', ()=>{
     navigator.serviceWorker.register('sw.js').catch(()=>{});
